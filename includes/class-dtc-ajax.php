@@ -67,6 +67,7 @@ function dtc_handle_ajax_calculation() {
     }
     
     $pickup_loc = sanitize_text_field($data['pickup_location'] ?? '');
+    $pickup_name = isset($cfg['pickups'][$pickup_loc]) ? $cfg['pickups'][$pickup_loc] : 'N/A';
     $trip_days = max(1, intval($data['trip_days'] ?? 7));
     $serv = sanitize_text_field($data['service_type'] ?? 'both');
     $service_name = $cfg['service_types'][$serv] ?? 'Package';
@@ -75,7 +76,8 @@ function dtc_handle_ajax_calculation() {
     foreach ($cfg['vehicles'] as $k => $v) {
         $mapped_vehicles[$k] = $v;
         $daily = is_array($v['price_per_day']) ? (isset($v['price_per_day'][$pickup_loc]) ? $v['price_per_day'][$pickup_loc] : (reset($v['price_per_day']) ?: 0)) : $v['price_per_day'];
-        $mapped_vehicles[$k]['price'] = $daily * $trip_days;
+        $mapped_vehicles[$k]['price'] = $daily * $trip_days; 
+        $mapped_vehicles[$k]['daily_price'] = $daily; 
     }
 
     $vr = [];
@@ -83,9 +85,104 @@ function dtc_handle_ajax_calculation() {
         $vr[] = ['html' => '<span class="u-badge badge-room-std">N/A</span>', 'cost' => 0];
     } else {
         if (($data['room_mode'] ?? 'auto') === 'custom') {
-            $vr[] = dtc_calc_custom($data['custom_rooms'] ?? [], $cfg['rooms'], 'badge-room-std');
+            $custom_locs = $data['custom_room_loc'] ?? [];
+            $custom_rooms = $data['custom_rooms'] ?? [];
+            $custom_nights = $data['custom_room_nights'] ?? [];
+            $custom_qtys = $data['custom_room_qty'] ?? [];
+            
+            if (empty($custom_rooms)) {
+                $vr[] = null;
+            } else {
+                $cost = 0; $badges = "";
+                $r_counts = [];
+                $grouped = [];
+                
+                foreach ($custom_rooms as $idx => $rk) {
+                    if (!isset($cfg['rooms'][$rk])) continue;
+                    $loc = $custom_locs[$idx] ?? '';
+                    $nights = intval($custom_nights[$idx] ?? 1);
+                    $qty_input = intval($custom_qtys[$idx] ?? 1);
+                    if ($qty_input < 1) $qty_input = 1;
+                    
+                    $key = $rk . '|' . $loc . '|' . $nights;
+                    if (!isset($r_counts[$key])) {
+                        $r_counts[$key] = ['k' => $rk, 'loc' => $loc, 'nights' => $nights, 'qty' => 0];
+                    }
+                    $r_counts[$key]['qty'] += $qty_input;
+                }
+                
+                foreach ($r_counts as $rc) {
+                    $k = $rc['k']; $loc = $rc['loc']; $nights = $rc['nights']; $qty = $rc['qty'];
+                    $v = $cfg['rooms'][$k];
+                    $daily = is_array($v['price']) ? ($v['price'][$loc] ?? (reset($v['price']) ?: 0)) : $v['price'];
+                    
+                    $cost += $qty * $nights * $daily;
+                    
+                    $loc_name = $cfg['stay_locations'][$loc] ?? $loc;
+                    $g_title = "{$nights}N {$loc_name}";
+                    if (!isset($grouped[$g_title])) $grouped[$g_title] = [];
+                    $grouped[$g_title][] = "{$qty}x {$v['name']}";
+                }
+                
+                foreach ($grouped as $g_title => $strs) {
+                    $r_list = implode(', ', $strs);
+                    $badges .= "<span class='u-badge badge-room-std'>{$g_title} ({$r_list})</span>";
+                }
+                
+                $vr[] = ['html' => "<div class='badge-list'>$badges</div>", 'cost' => $cost];
+            }
         } else {
-            $vr = dtc_calc_auto($pax, $cfg['rooms'], $data['room_pref'] ?? 'any', 'badge-room-std', false);
+            $auto_stay_locs = $data['auto_stay_loc'] ?? [];
+            $auto_stay_nights = $data['auto_stay_nights'] ?? [];
+            $auto_stay_prefs = $data['auto_stay_pref'] ?? [];
+
+            if (empty($auto_stay_locs)) {
+                $vr[] = null;
+            } else {
+                $vr_combos = [['html' => '', 'cost' => 0]];
+
+                foreach ($auto_stay_locs as $idx => $loc) {
+                    $nights = intval($auto_stay_nights[$idx] ?? 1);
+                    if ($nights < 1) continue;
+                    
+                    $pref = $auto_stay_prefs[$idx] ?? 'any';
+                    $loc_name = $cfg['stay_locations'][$loc] ?? $loc;
+                    $group_title = "{$nights}N {$loc_name}";
+                    
+                    $loc_rooms = [];
+                    foreach ($cfg['rooms'] as $k => $v) {
+                        $daily = is_array($v['price']) ? ($v['price'][$loc] ?? (reset($v['price']) ?: 0)) : $v['price'];
+                        $loc_rooms[$k] = $v;
+                        $loc_rooms[$k]['price'] = $daily;
+                        $loc_rooms[$k]['name'] = $v['name']; 
+                    }
+
+                    $loc_results = dtc_calc_auto($pax, $loc_rooms, $pref, 'badge-room-std', false, $nights, $group_title);
+                    
+                    if (empty($loc_results)) {
+                        $vr_combos = []; 
+                        break; 
+                    }
+
+                    $new_vr_combos = [];
+                    foreach ($vr_combos as $base) {
+                        foreach ($loc_results as $lr) {
+                            $new_vr_combos[] = [
+                                'html' => $base['html'] . $lr['html'], 
+                                'cost' => $base['cost'] + $lr['cost']
+                            ];
+                        }
+                    }
+                    $vr_combos = $new_vr_combos;
+                }
+                
+                $final_vr = [];
+                foreach ($vr_combos as $combo) {
+                    $clean_html = str_replace(["<div class='badge-list'>", "</div>"], "", $combo['html']);
+                    $final_vr[] = ['html' => "<div class='badge-list'>{$clean_html}</div>", 'cost' => $combo['cost']];
+                }
+                $vr = $final_vr;
+            }
         }
     }
 
@@ -94,9 +191,40 @@ function dtc_handle_ajax_calculation() {
         $vv[] = ['html' => '<span class="u-badge badge-veh">N/A</span>', 'cost' => 0];
     } else {
         if (($data['vehicle_mode'] ?? 'auto') === 'custom') {
-            $vv[] = dtc_calc_custom($data['custom_vehicles'] ?? [], $mapped_vehicles, 'badge-veh');
+            $custom_v = $data['custom_vehicles'] ?? [];
+            $custom_d = $data['custom_veh_days'] ?? [];
+            $custom_vq = $data['custom_veh_qty'] ?? [];
+            
+            if (empty($custom_v)) {
+                $vv[] = null;
+            } else {
+                $cost = 0; $badges = "";
+                $v_counts = [];
+                
+                foreach ($custom_v as $idx => $vk) {
+                    if (!isset($mapped_vehicles[$vk])) continue;
+                    $days = (!empty($custom_d[$idx])) ? intval($custom_d[$idx]) : $trip_days;
+                    $vqty = intval($custom_vq[$idx] ?? 1);
+                    if ($vqty < 1) $vqty = 1;
+
+                    $key = $vk . '|' . $days;
+                    
+                    if(!isset($v_counts[$key])) {
+                        $v_counts[$key] = ['k' => $vk, 'days' => $days, 'qty' => 0];
+                    }
+                    $v_counts[$key]['qty'] += $vqty;
+                }
+                
+                foreach ($v_counts as $vc) {
+                    $k = $vc['k']; $days = $vc['days']; $qty = $vc['qty'];
+                    $cost += $qty * $days * $mapped_vehicles[$k]['daily_price'];
+                    $day_label = ($days == $trip_days) ? "Full Trip" : "{$days} Days";
+                    $badges .= "<span class='u-badge badge-veh'>{$qty}x {$mapped_vehicles[$k]['name']} ({$day_label})</span>";
+                }
+                $vv[] = ['html' => "<div class='badge-list'>$badges</div>", 'cost' => $cost];
+            }
         } else {
-            $vv = dtc_calc_auto($pax, $mapped_vehicles, $data['cab_pref'] ?? 'any', 'badge-veh', true);
+            $vv = dtc_calc_auto($pax, $mapped_vehicles, $data['cab_pref'] ?? 'any', 'badge-veh', true); 
         }
     }
 
@@ -105,8 +233,7 @@ function dtc_handle_ajax_calculation() {
         foreach($vr as $robj) {
             if (!$vobj || !$robj) continue; 
             
-            $base_pax_cost = ($serv === 'cab') ? 0 : $cfg['base_cost_per_pax'];
-            $base_cost = $vobj['cost'] + $robj['cost'] + ($tp * $base_pax_cost);
+            $base_cost = $vobj['cost'] + $robj['cost'];
             
             $active_multiplier = ($serv === 'cab') ? 1.0 : (1 + ($hotel_percent / 100));
             $agent_price = $base_cost * $active_multiplier * (1 + ($surcharge_percent / 100)); 
@@ -135,7 +262,10 @@ function dtc_handle_ajax_calculation() {
     $results = array_map("unserialize", array_unique(array_map("serialize", $results)));
     usort($results, function($a,$b){ return $a['grand_total'] <=> $b['grand_total']; });
 
-    if (empty($results)) wp_send_json_success('<div style="padding:15px;color:red;text-align:center;">No valid combinations found.</div>');
+    // Limit to top 50 combinations to prevent DOM freeze and infinite pagination
+    $results = array_slice($results, 0, 50);
+
+    if (empty($results)) wp_send_json_success('<div style="padding:15px;color:red;text-align:center;">No valid combinations found. Check Location/Room configs.</div>');
 
     $is_privileged = dtc_is_privileged_user();
 
@@ -159,10 +289,11 @@ function dtc_handle_ajax_calculation() {
             <div style='display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.3); margin-top:4px; padding-top:4px; font-weight:bold; gap:15px;'><span>Total:</span> <span>₹".dtc_money_format($grand_final)."</span></div>
         </div>";
 
-        $r_text = strip_tags(str_replace('</span>', ', ', $row['r_h']));
+        // Semi-colons used here to separate room groups beautifully
+        $r_text = strip_tags(str_replace('</span>', '; ', $row['r_h']));
         $v_text = strip_tags(str_replace('</span>', ', ', $row['v_h']));
-        $r_text = rtrim(trim($r_text), ',');
-        $v_text = rtrim(trim($v_text), ',');
+        $r_text = rtrim(trim($r_text), ';, ');
+        $v_text = rtrim(trim($v_text), ';, ');
 
         $row_data = [
             'dest_id' => $dest,
@@ -172,6 +303,7 @@ function dtc_handle_ajax_calculation() {
             'start' => date('d-M-Y', strtotime($tour_date)),
             'end' => $end_date_str,
             'service' => $service_name,
+            'pickup' => $pickup_name,
             'hotel' => $hotel_name,
             'rooms' => $r_text,
             'veh' => $v_text,
@@ -217,11 +349,30 @@ function dtc_handle_ajax_calculation() {
                 
                 if(pages > 1) {
                     var html = '';
-                    for(var i=1; i<=pages; i++) {
+                    var maxBtns = 5;
+                    var start = Math.max(1, p - Math.floor(maxBtns / 2));
+                    var end = Math.min(pages, start + maxBtns - 1);
+                    
+                    if (end - start < maxBtns - 1) {
+                        start = Math.max(1, end - maxBtns + 1);
+                    }
+
+                    if (start > 1) {
+                        html += '<button type=\"button\" onclick=\"dtcShowPage(1)\" style=\"margin:0 4px; padding:6px 12px; cursor:pointer; background:#f1f1f1; color:#333; border:1px solid #ccc; border-radius:4px; font-weight:bold;\">1</button>';
+                        if (start > 2) html += '<span style=\"margin:0 4px; color:#666;\">...</span>';
+                    }
+
+                    for(var i=start; i<=end; i++) {
                         var bg = (i===p) ? '#0073aa' : '#f1f1f1';
                         var col = (i===p) ? '#fff' : '#333';
                         html += '<button type=\"button\" onclick=\"dtcShowPage('+i+')\" style=\"margin:0 4px; padding:6px 12px; cursor:pointer; background:'+bg+'; color:'+col+'; border:1px solid #ccc; border-radius:4px; font-weight:bold;\">'+i+'</button>';
                     }
+
+                    if (end < pages) {
+                        if (end < pages - 1) html += '<span style=\"margin:0 4px; color:#666;\">...</span>';
+                        html += '<button type=\"button\" onclick=\"dtcShowPage('+pages+')\" style=\"margin:0 4px; padding:6px 12px; cursor:pointer; background:#f1f1f1; color:#333; border:1px solid #ccc; border-radius:4px; font-weight:bold;\">'+pages+'</button>';
+                    }
+
                     document.getElementById('dtc-pagination').innerHTML = html;
                 }
             };
@@ -244,7 +395,7 @@ function dtc_calc_custom($keys, $settings, $badge_class) {
     return ['html' => "<div class='badge-list'>$badges</div>", 'cost' => $cost];
 }
 
-function dtc_calc_auto($target_pax, $settings, $pref, $badge_class, $is_veh) {
+function dtc_calc_auto($target_pax, $settings, $pref, $badge_class, $is_veh, $multiplier = 1, $group_title = '') {
     $items = []; foreach ($settings as $k => $v) { if ($pref === 'any' || $pref === $k) $items[$k] = $v; }
     $results = []; $keys = array_keys($items);
     if (empty($keys)) return [];
@@ -269,11 +420,19 @@ function dtc_calc_auto($target_pax, $settings, $pref, $badge_class, $is_veh) {
 
     $formatted = [];
     foreach ($results as $combo) {
-        $cost = 0; $badges = "";
+        $cost = 0; $badges = ""; $strs = [];
         foreach ($combo as $k => $qty) {
             if ($qty <= 0) continue;
-            $cost += $qty * $items[$k]['price'];
-            $badges .= "<span class='u-badge {$badge_class}'>{$qty}x {$items[$k]['name']}</span>";
+            $cost += $qty * $items[$k]['price'] * $multiplier;
+            $strs[] = "{$qty}x {$items[$k]['name']}";
+        }
+        if ($group_title !== '') {
+            $r_list = implode(', ', $strs);
+            $badges = "<span class='u-badge {$badge_class}'>{$group_title} ({$r_list})</span>";
+        } else {
+            foreach ($strs as $s) {
+                $badges .= "<span class='u-badge {$badge_class}'>{$s}</span>";
+            }
         }
         $formatted[] = ['html' => "<div class='badge-list'>$badges</div>", 'cost' => $cost];
     }
@@ -290,12 +449,8 @@ function dtc_handle_send_quote_email() {
 
     $subject = "Tour Quotation from SOULFUL TOUR & TRAVELS";
     
-    // Grab the global BCC setting
     $bcc_email = get_option('dtc_bcc_email', '');
-    
     $headers = ['Content-Type: text/html; charset=UTF-8'];
-    
-    // If a BCC email is set, append it to the headers array
     if (!empty($bcc_email) && is_email($bcc_email)) {
         $headers[] = 'Bcc: ' . $bcc_email;
     }

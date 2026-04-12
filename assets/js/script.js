@@ -3,6 +3,8 @@ jQuery(document).ready(function($) {
     let masterCfg = dtc_obj.config;
     let cachedCustomVehOptions = '';
     let cachedCustomRoomOptions = '';
+    let cachedLocOptions = '';
+    let cachedRoomPrefOptions = '';
 
     let activeRowData = null;
 
@@ -22,7 +24,7 @@ jQuery(document).ready(function($) {
         
         if(!dest || !masterCfg.destinations[dest]) {
             $('#ui_pickup_location, #ui_service_type, #ui_hotel_category, #ui_cab_pref, #ui_room_pref').html('<option value="" disabled selected>-- Select --</option>');
-            $('#dtc-list-v, #dtc-list-r').empty();
+            $('#dtc-list-v, #dtc-list-r', '#dtc-auto-stays-list').empty();
             return;
         }
 
@@ -48,15 +50,19 @@ jQuery(document).ready(function($) {
         });
         $('#ui_cab_pref').html(vehPrefHtml);
         
-        let roomPrefHtml = '<option value="any">Any Room Combo</option>';
+        cachedLocOptions = '<option value="" disabled selected>-- Select Location --</option>';
+        $.each(dCfg.stay_locations || {}, function(k, v) { cachedLocOptions += `<option value="${k}">${v}</option>`; });
+
+        cachedRoomPrefOptions = '<option value="any">Any Room Combo</option>';
         cachedCustomRoomOptions = '';
         $.each(dCfg.rooms, function(k, v) {
-            roomPrefHtml += `<option value="${k}">Prefer ${v.name}</option>`;
+            cachedRoomPrefOptions += `<option value="${k}">Prefer ${v.name}</option>`;
             cachedCustomRoomOptions += `<option value="${k}">${v.name} (${v.capacity} Pax)</option>`;
         });
-        $('#ui_room_pref').html(roomPrefHtml);
 
-        $('#dtc-list-v').empty(); $('#dtc-list-r').empty();
+        $('#dtc-list-v').empty(); $('#dtc-list-r').empty(); $('#dtc-auto-stays-list').empty();
+        addAutoStayRow(); 
+        updateNightsCounter();
     }
 
     populateMainDestinations();
@@ -70,7 +76,11 @@ jQuery(document).ready(function($) {
         $(this).text(currentText.includes('+') ? '[- Hide Settings]' : '[+ Expand / Edit]');
     });
 
-    $('input[name="room_mode"]').change(function() { $('#dtc-div-r-a').toggleClass('hidden', this.value !== 'auto'); $('#dtc-div-r-c').toggleClass('hidden', this.value !== 'custom'); });
+    $('input[name="room_mode"]').change(function() { 
+        $('#dtc-div-r-a').toggleClass('hidden', this.value !== 'auto'); 
+        $('#dtc-div-r-c').toggleClass('hidden', this.value !== 'custom'); 
+        updateNightsCounter();
+    });
     $('input[name="vehicle_mode"]').change(function() { $('#dtc-div-v-a').toggleClass('hidden', this.value !== 'auto'); $('#dtc-div-v-c').toggleClass('hidden', this.value !== 'custom'); });
     
     $('#ui_service_type').change(function() {
@@ -80,16 +90,126 @@ jQuery(document).ready(function($) {
         else { $('#box-rooms, #box-transport').show(); $('#ui_hotel_cat_box').show(); }
     });
 
-    $('#dtc-add-r').click(function() { let r = $($('#dtc-tpl-room-row').html()); r.find('.dynamic-room-options').html(cachedCustomRoomOptions); $('#dtc-list-r').append(r); });
-    $('#dtc-add-v').click(function() { let r = $($('#dtc-tpl-veh-row').html()); r.find('.dynamic-veh-options').html(cachedCustomVehOptions); $('#dtc-list-v').append(r); });
-    $(document).on('click', '.btn-rem', function() { $(this).parent().remove(); });
+    // --- NIGHTS COUNTER LOGIC (UPDATED FOR MULTIPLE ROOMS) ---
+    function updateNightsCounter() {
+        let days = parseInt($('input[name="trip_days"]').val()) || 0;
+        let totalNights = Math.max(0, days - 1);
+        
+        if (totalNights <= 0) {
+            $('#dtc-nights-counter').hide();
+            return 1;
+        }
+        $('#dtc-nights-counter').show();
+
+        let mode = $('input[name="room_mode"]:checked').val();
+        let assigned = 0;
+
+        if (mode === 'auto') {
+            $('input[name="auto_stay_nights[]"]').each(function() {
+                assigned += parseInt($(this).val()) || 0;
+            });
+        } else {
+            // Manual Mode: Groups rooms by location so concurrent rooms don't double-count nights
+            let locNights = {};
+            $('#dtc-list-r .build-row').each(function() {
+                let loc = $(this).find('.dynamic-loc-options').val();
+                let n = parseInt($(this).find('input[name="custom_room_nights[]"]').val()) || 0;
+                if (loc) {
+                    if (!locNights[loc] || n > locNights[loc]) {
+                        locNights[loc] = n;
+                    }
+                }
+            });
+            for (let loc in locNights) {
+                assigned += locNights[loc];
+            }
+        }
+
+        let remaining = totalNights - assigned;
+        
+        let cBox = $('#dtc-nights-counter');
+        cBox.find('.tot-n').text(totalNights);
+        cBox.find('.ass-n').text(assigned);
+        cBox.find('.rem-n').text(remaining);
+
+        if (remaining < 0) {
+            cBox.css({'background':'#fee2e2', 'border-color':'#fca5a5', 'color':'#dc2626'});
+        } else if (remaining === 0) {
+            cBox.css({'background':'#dcfce7', 'border-color':'#86efac', 'color':'#16a34a'});
+        } else {
+            cBox.css({'background':'#e0f2fe', 'border-color':'#7dd3fc', 'color':'#0369a1'});
+        }
+        
+        return remaining;
+    }
+
+    $('input[name="trip_days"]').on('input change', updateNightsCounter);
+    $(document).on('input change', 'input[name="auto_stay_nights[]"], input[name="custom_room_nights[]"]', updateNightsCounter);
+    $(document).on('change', '.dynamic-loc-options', updateNightsCounter);
+
+    // --- ROW ADDERS ---
+    function addAutoStayRow() {
+        let rem = updateNightsCounter();
+        if(rem < 1) rem = 1;
+        let r = $($('#dtc-tpl-auto-stay-row').html()); 
+        r.find('.dynamic-loc-options').html(cachedLocOptions);
+        r.find('input[name="auto_stay_nights[]"]').val(rem);
+        $('#dtc-auto-stays-list').append(r);
+        updateNightsCounter();
+    }
+    $('#dtc-add-auto-stay').click(addAutoStayRow);
+
+    function addCustomRoomRow() {
+        let rem = updateNightsCounter();
+        if(rem < 1) rem = 1;
+        let r = $($('#dtc-tpl-room-row').html());
+        r.find('.dynamic-loc-options').html(cachedLocOptions);
+        r.find('.dynamic-room-options').html(cachedCustomRoomOptions);
+        r.find('input[name="custom_room_nights[]"]').val(rem);
+        $('#dtc-list-r').append(r);
+        updateNightsCounter();
+    }
+    $('#dtc-add-r').click(addCustomRoomRow);
+    
+    $('#dtc-add-v').click(function() { 
+        let days = parseInt($('input[name="trip_days"]').val()) || 1;
+        let r = $($('#dtc-tpl-veh-row').html()); 
+        r.find('.dynamic-veh-options').html(cachedCustomVehOptions); 
+        r.find('input[name="custom_veh_days[]"]').val(days);
+        $('#dtc-list-v').append(r); 
+    });
+    
+    // --- ROW ACTIONS (Remove & Duplicate) ---
+    $(document).on('click', '.btn-rem', function() { 
+        $(this).closest('.build-row').remove(); 
+        updateNightsCounter();
+    });
+
+    $(document).on('click', '.btn-dup', function() {
+        let row = $(this).closest('.build-row');
+        let clone = row.clone();
+        
+        row.find('select').each(function(i) {
+            clone.find('select').eq(i).val($(this).val());
+        });
+        
+        let nightInput = clone.find('input[name="auto_stay_nights[]"], input[name="custom_room_nights[]"]');
+        if(nightInput.length) {
+            let rem = updateNightsCounter();
+            if(rem < 1) rem = 1;
+            nightInput.val(rem);
+        }
+        
+        row.after(clone);
+        updateNightsCounter();
+    });
 
     $('#dtc-form').submit(function(e) {
         e.preventDefault();
         let btn = $('#btn-submit');
         btn.find('.btn-text').addClass('hidden'); btn.find('.btn-loader').removeClass('hidden'); btn.prop('disabled', true);
         $.post(dtc_obj.ajax_url, { action: 'dtc_calculate', nonce: dtc_obj.nonce, form_data: $(this).serialize() }, function(response) {
-            $('#dtc-results').html(response.success ? response.data : '<div style="padding:15px;color:red;text-align:center;">Failed.</div>');
+            $('#dtc-results').html(response.success ? response.data : '<div style="padding:15px;color:red;text-align:center;">Failed. Check your inputs.</div>');
             btn.find('.btn-text').removeClass('hidden'); btn.find('.btn-loader').addClass('hidden'); btn.prop('disabled', false);
         });
     });
@@ -121,6 +241,13 @@ jQuery(document).ready(function($) {
             });
         }
         $('#dtc-places-checkboxes').html(html);
+
+        $('#mod_base_pp').val(activeRowData.base_pp);
+        $('#mod_other_name').val('');
+        $('#mod_other_cost').val(0);
+        $('#mod_disc_flat').val(0);
+        $('#mod_disc_perc').val(0);
+
         $('#dtc-places-modal').removeClass('hidden');
     });
 
@@ -129,25 +256,42 @@ jQuery(document).ready(function($) {
         $('.dtc-place-cb:checked').each(function() { selectedPlaces.push($(this).val()); });
         
         activeRowData.selected_places = selectedPlaces;
-        
         let d = activeRowData;
         let genDate = new Date().toLocaleString('en-IN', { hour12: true });
         
         let placesText = selectedPlaces.length > 0 ? selectedPlaces.map(p => `• ${p}`).join('\n') : '• N/A';
         let placesHtml = selectedPlaces.length > 0 ? selectedPlaces.map(p => `<li>${p}</li>`).join('') : '<li>N/A</li>';
 
-        let grandBase = d.base_pp * d.pax;
-        let grandGst = d.gst_pp * d.pax;
+        // Split the semi-colon string into a nice Array for list formatting
+        let roomArr = (d.rooms || '').split(';').map(s => s.trim()).filter(s => s !== '');
+        let roomListWA = roomArr.length > 0 ? '\n' + roomArr.map(r => `  ◦ ${r}`).join('\n') : ' N/A';
+        let roomListHTML = roomArr.length > 0 ? '<ul style="margin:0; padding-left:15px; margin-top:2px;">' + roomArr.map(r => `<li>${r}</li>`).join('') + '</ul>' : ' N/A';
+
+        let new_base_pp = parseFloat($('#mod_base_pp').val()) || d.base_pp;
+        let other_cost = parseFloat($('#mod_other_cost').val()) || 0;
+        let other_name = $('#mod_other_name').val() || 'Other Services';
+        let disc_flat = parseFloat($('#mod_disc_flat').val()) || 0;
+        let disc_perc = parseFloat($('#mod_disc_perc').val()) || 0;
+
+        let grandBase = new_base_pp * d.pax;
+        let subTotal = grandBase + other_cost;
+        
+        let disc_amt = disc_flat + (subTotal * (disc_perc / 100));
+        let taxable = subTotal - disc_amt;
+        
+        let grandGst = taxable * 0.05;
+        let grandTotal = Math.round(taxable + grandGst); 
+        let final_tot_pp = Math.round(grandTotal / d.pax);
 
         let nights = d.days > 1 ? d.days - 1 : 0;
         let durationText = `${d.days} Days / ${nights} Nights`;
 
-        // --- GENERATE WHATSAPP TEXT ---
         let waText = `*SOULFUL TOUR & TRAVELS*
 _GSTIN: 19AXIPD7432L1Z5_
 
 *Quotation Details*
 • Destination: ${d.dest_name}
+• Pickup: ${d.pickup || 'N/A'}
 • Service: ${d.service}
 • Duration: ${durationText}
 • Dates: ${d.start} to ${d.end}
@@ -155,23 +299,45 @@ _GSTIN: 19AXIPD7432L1Z5_
 • Hotel: ${d.hotel}
 
 *Accommodation & Transport*
-• Rooms: ${d.rooms}
+• Rooms:${roomListWA}
 • Vehicle: ${d.veh}
 
 *Places to Visit*
 ${placesText}
 
 *Pricing (INR)*
-• Base Price PP: ₹ ${formatIN(d.base_pp)}
-• GST (5%) PP: ₹ ${formatIN(d.gst_pp)}
-• Total Price PP: ₹ ${formatIN(d.tot_pp)}
-*Grand Total: ₹ ${formatIN(d.grand_total)}*
+• Base Total (${d.pax} Pax): ₹ ${formatIN(grandBase)} (@ ₹${formatIN(new_base_pp)} PP)`;
+
+        if (other_cost > 0) {
+            waText += `\n• ${other_name}: + ₹ ${formatIN(other_cost)}`;
+        }
+        
+        if (disc_amt > 0) {
+            let discText = [];
+            if(disc_flat > 0) discText.push(`₹${disc_flat}`);
+            if(disc_perc > 0) discText.push(`${disc_perc}%`);
+            waText += `\n• Discount (${discText.join(' + ')}): - ₹ ${formatIN(Math.round(disc_amt))}`;
+        }
+
+        waText += `
+• GST (5%): + ₹ ${formatIN(Math.round(grandGst))}
+*Grand Total: ₹ ${formatIN(grandTotal)}*
+_(Approx ₹${formatIN(final_tot_pp)} Per Person)_
 
 _Generated on: ${genDate}_`;
 
         $('#btn-copy-wa').attr('data-text', waText);
 
-        // --- GENERATE ULTRA-COMPACT HTML VIEW ---
+        let otherHtml = other_cost > 0 ? `
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px; color:#475569;">
+                <div>${other_name}:</div> <div>+ ₹ ${formatIN(other_cost)}</div>
+            </div>` : '';
+            
+        let discHtml = disc_amt > 0 ? `
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px; color:#ef4444; border-top:1px dashed #bae6fd; padding-top:4px;">
+                <div>Discount:</div> <div>- ₹ ${formatIN(Math.round(disc_amt))}</div>
+            </div>` : '';
+
         let htmlContent = `
         <div style="text-align:center; border-bottom:1px solid #0073aa; padding-bottom:5px; margin-bottom:8px;">
             <h2 style="margin:0; color:#0073aa; font-size:14px; text-transform:uppercase;">SOULFUL TOUR & TRAVELS</h2>
@@ -181,21 +347,25 @@ _Generated on: ${genDate}_`;
         <table style="width:100%; border-collapse:collapse; font-size:10px; margin-bottom:8px; line-height:1.2;">
             <tr>
                 <td style="padding:4px; border:1px solid #e2e8f0; width:50%;"><b>Dest:</b> ${d.dest_name}</td>
-                <td style="padding:4px; border:1px solid #e2e8f0; width:50%;"><b>Type:</b> ${d.service}</td>
+                <td style="padding:4px; border:1px solid #e2e8f0; width:50%;"><b>Pickup:</b> ${d.pickup || 'N/A'}</td>
             </tr>
             <tr>
-                <td style="padding:4px; border:1px solid #e2e8f0;"><b>Dates:</b> ${d.start} to ${d.end}</td>
+                <td style="padding:4px; border:1px solid #e2e8f0;"><b>Type:</b> ${d.service}</td>
                 <td style="padding:4px; border:1px solid #e2e8f0;"><b>Duration:</b> ${durationText}</td>
             </tr>
             <tr>
+                <td style="padding:4px; border:1px solid #e2e8f0;"><b>Dates:</b> ${d.start} to ${d.end}</td>
                 <td style="padding:4px; border:1px solid #e2e8f0;"><b>Pax:</b> ${d.pax}</td>
+            </tr>
+            <tr>
                 <td style="padding:4px; border:1px solid #e2e8f0;"><b>Hotel:</b> ${d.hotel}</td>
+                <td style="padding:4px; border:1px solid #e2e8f0;"><b>Vehicle:</b> ${d.veh}</td>
             </tr>
             <tr>
-                <td colspan="2" style="padding:4px; border:1px solid #e2e8f0;"><b>Rooms:</b> ${d.rooms}</td>
-            </tr>
-            <tr>
-                <td colspan="2" style="padding:4px; border:1px solid #e2e8f0;"><b>Vehicle:</b> ${d.veh}</td>
+                <td colspan="2" style="padding:4px; border:1px solid #e2e8f0; vertical-align:top;">
+                    <b>Rooms:</b>
+                    ${roomListHTML}
+                </td>
             </tr>
         </table>
 
@@ -206,13 +376,15 @@ _Generated on: ${genDate}_`;
 
         <div style="background:#f0f9ff; border:1px solid #bae6fd; padding:6px 8px; border-radius:4px; font-size:10px; line-height:1.2;">
             <div style="display:flex; justify-content:space-between; margin-bottom:3px; color:#475569;">
-                <div>Base Total (${d.pax} Pax):</div> <div>₹ ${formatIN(grandBase)} <span style="font-size:8px;">(₹${formatIN(d.base_pp)} PP)</span></div>
+                <div>Base Total (${d.pax} Pax):</div> <div>₹ ${formatIN(grandBase)} <span style="font-size:8px;">(₹${formatIN(new_base_pp)} PP)</span></div>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:3px; color:#475569; border-bottom:1px dashed #bae6fd; padding-bottom:4px;">
-                <div>GST (5%):</div> <div>+ ₹ ${formatIN(grandGst)} <span style="font-size:8px;">(₹${formatIN(d.gst_pp)} PP)</span></div>
+            ${otherHtml}
+            ${discHtml}
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px; color:#475569; border-top:1px dashed #bae6fd; padding-top:4px;">
+                <div>GST (5%):</div> <div>+ ₹ ${formatIN(Math.round(grandGst))}</div>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-top:4px; font-weight:bold; font-size:13px; color:#0369a1;">
-                <div>GRAND TOTAL:</div> <div>₹ ${formatIN(d.grand_total)} <span style="font-size:9px; color:#0284c7;">(₹${formatIN(d.tot_pp)} PP)</span></div>
+            <div style="display:flex; justify-content:space-between; margin-top:4px; font-weight:bold; font-size:13px; color:#0369a1; border-top:1px solid #bae6fd; padding-top:4px;">
+                <div>GRAND TOTAL:</div> <div>₹ ${formatIN(grandTotal)} <span style="font-size:9px; color:#0284c7;">(₹${formatIN(final_tot_pp)} PP)</span></div>
             </div>
         </div>
         
@@ -280,23 +452,21 @@ _Generated on: ${genDate}_`;
             let nid = prompt("Enter a unique ID for new destination (e.g. goa, kerala):");
             if(nid && !masterCfg.destinations[nid]) {
                 masterCfg.destinations[nid] = {
-                    name: "New " + nid, base_cost_per_pax: 0, profit_margin_per_pax: 0,
+                    name: "New " + nid, profit_margin_per_pax: 0,
                     service_types: { both: "Package", hotel: "Hotel Only", cab: "Cab Only" },
-                    pickups: {}, places: {}, hotel_categories: {}, rooms: {}, vehicles: {}, seasonal_surcharges: []
+                    pickups: {}, stay_locations: {}, places: {}, hotel_categories: {}, rooms: {}, vehicles: {}, seasonal_surcharges: []
                 };
                 loadSettingsDestinations();
                 $('#set-dest-select').val(nid).change();
             }
         });
 
-        // NEW DUPLICATE DESTINATION LOGIC
         $('#btn-dup-dest').click(function() {
             let id = $('#set-dest-select').val();
             if(!id || !masterCfg.destinations[id]) return;
 
             let nid = prompt("Enter a unique ID for the duplicated destination (e.g. kashmir_copy):");
             if(nid && !masterCfg.destinations[nid]) {
-                // Deep clone the selected destination
                 let clonedDest = JSON.parse(JSON.stringify(masterCfg.destinations[id]));
                 clonedDest.name = clonedDest.name + " (Copy)";
                 masterCfg.destinations[nid] = clonedDest;
@@ -322,12 +492,12 @@ _Generated on: ${genDate}_`;
             
             $('#set-dest-id').val(id);
             $('#set-dest-name').val(d.name);
-            $('#set-base-cost').val(d.base_cost_per_pax);
             $('#set-profit').val(d.profit_margin_per_pax);
             
-            $('#set-pickups-list, #set-places-list, #set-services-list, #set-vehicles-list, #set-rooms-list, #set-hotels-list, #set-seasons-list').empty();
+            $('#set-pickups-list, #set-staylocs-list, #set-places-list, #set-services-list, #set-vehicles-list, #set-rooms-list, #set-hotels-list, #set-seasons-list').empty();
 
             $.each(d.pickups, function(k, v){ addSetPickup(k, v); });
+            $.each(d.stay_locations || {}, function(k, v){ addSetStayLoc(k, v); });
             $.each(d.places || {}, function(k, v){ addSetPlace(k, v); });
             $.each(d.service_types, function(k, v){ addSetService(k, v); });
 
@@ -338,7 +508,12 @@ _Generated on: ${genDate}_`;
                 addSetVeh(k, v.name, v.capacity, pStr.join(', ')); 
             });
             
-            $.each(d.rooms, function(k, v){ addSetRoom(k, v.name, v.price, v.capacity); });
+            $.each(d.rooms, function(k, v){ 
+                let pStr = [];
+                if (typeof v.price === 'object') { $.each(v.price, function(pk, pv) { pStr.push(pk + ':' + pv); }); } 
+                else { pStr.push('default:' + v.price); }
+                addSetRoom(k, v.name, pStr.join(', '), v.capacity); 
+            });
             
             $.each(d.hotel_categories, function(k, v){ 
                 let perc = v.percent !== undefined ? v.percent : ((v.multiplier || 1) - 1) * 100;
@@ -350,6 +525,9 @@ _Generated on: ${genDate}_`;
 
         $('#btn-add-set-pickup').click(function(){ addSetPickup('', ''); });
         function addSetPickup(id, name) { let r = $($('#tpl-set-pickup').html()); r.find('.set-p-id').val(id); r.find('.set-p-name').val(name); $('#set-pickups-list').append(r); }
+
+        $('#btn-add-set-stayloc').click(function(){ addSetStayLoc('', ''); });
+        function addSetStayLoc(id, name) { let r = $($('#tpl-set-stayloc').html()); r.find('.set-sl-id').val(id); r.find('.set-sl-name').val(name); $('#set-staylocs-list').append(r); }
 
         $('#btn-add-set-place').click(function(){ addSetPlace('', ''); });
         function addSetPlace(id, name) { let r = $($('#tpl-set-place').html()); r.find('.set-pl-id').val(id); r.find('.set-pl-name').val(name); $('#set-places-list').append(r); }
@@ -376,11 +554,12 @@ _Generated on: ${genDate}_`;
             let d = masterCfg.destinations[id];
             
             d.name = $('#set-dest-name').val();
-            d.base_cost_per_pax = parseFloat($('#set-base-cost').val());
             d.profit_margin_per_pax = parseFloat($('#set-profit').val());
 
             d.pickups = {}; $('#set-pickups-list .build-row').each(function(){ let k=$(this).find('.set-p-id').val(); if(k) d.pickups[k] = $(this).find('.set-p-name').val(); });
             
+            d.stay_locations = {}; $('#set-staylocs-list .build-row').each(function(){ let k=$(this).find('.set-sl-id').val(); if(k) d.stay_locations[k] = $(this).find('.set-sl-name').val(); });
+
             d.places = {}; $('#set-places-list .build-row').each(function(){ let k=$(this).find('.set-pl-id').val(); if(k) d.places[k] = $(this).find('.set-pl-name').val(); });
             
             d.service_types = {}; $('#set-services-list .build-row').each(function(){ let k=$(this).find('.set-sv-id').val(); if(k) d.service_types[k] = $(this).find('.set-sv-name').val(); });
@@ -396,12 +575,24 @@ _Generated on: ${genDate}_`;
                         if (pts.length > 1) { priceObj[pts[0].trim()] = parseFloat(pts[1].trim()) || 0; } 
                         else if (pts[0].trim() !== '') { priceObj['default'] = parseFloat(pts[0].trim()); }
                     });
-
                     d.vehicles[k] = { name: $(this).find('.set-v-name').val(), capacity: parseInt($(this).find('.set-v-cap').val()), price_per_day: priceObj }; 
                 }
             });
 
-            d.rooms = {}; $('#set-rooms-list .build-row').each(function(){ let k=$(this).find('.set-r-id').val(); if(k) d.rooms[k] = {name: $(this).find('.set-r-name').val(), price: parseFloat($(this).find('.set-r-price').val()), capacity: parseInt($(this).find('.set-r-cap').val())}; });
+            d.rooms = {}; 
+            $('#set-rooms-list .build-row').each(function(){ 
+                let k=$(this).find('.set-r-id').val(); 
+                if(k) {
+                    let priceRaw = $(this).find('.set-r-price').val().toString().split(',');
+                    let priceObj = {};
+                    priceRaw.forEach(pr => {
+                        let pts = pr.split(':');
+                        if (pts.length > 1) { priceObj[pts[0].trim()] = parseFloat(pts[1].trim()) || 0; } 
+                        else if (pts[0].trim() !== '') { priceObj['default'] = parseFloat(pts[0].trim()); }
+                    });
+                    d.rooms[k] = {name: $(this).find('.set-r-name').val(), price: priceObj, capacity: parseInt($(this).find('.set-r-cap').val())}; 
+                }
+            });
 
             d.hotel_categories = {};
             $('#set-hotels-list .build-row').each(function(){ 

@@ -17,7 +17,6 @@ function dtc_is_privileged_user() {
 
 function dtc_render_settings_page() {
     
-    // Handle File Import
     if (isset($_POST['dtc_import_settings']) && check_admin_referer('dtc_save_action', 'dtc_nonce')) {
         if (!empty($_FILES['dtc_import_file']['tmp_name'])) {
             $imported_data = file_get_contents($_FILES['dtc_import_file']['tmp_name']);
@@ -30,7 +29,6 @@ function dtc_render_settings_page() {
         }
     }
 
-    // Handle Standard Save
     if (isset($_POST['dtc_save_settings']) && check_admin_referer('dtc_save_action', 'dtc_nonce')) {
         $allow_guests = isset($_POST['dtc_allow_guests']) ? 'yes' : 'no';
         update_option('dtc_allow_guests', $allow_guests);
@@ -137,7 +135,6 @@ function dtc_get_default_config() {
         'destinations' => [
             'kashmir' => [
                 'name' => 'Kashmir',
-                'base_cost_per_pax' => 6000,
                 'profit_margin_per_pax' => 6000,
                 'service_types' => [
                     'both' => 'Package (Hotel + MAP + Cab)',
@@ -147,6 +144,11 @@ function dtc_get_default_config() {
                 'pickups' => [
                     'srinagar' => 'Srinagar R.S / Airport',
                     'jammu' => 'Jammu R.S / Airport'
+                ],
+                'stay_locations' => [
+                    'srinagar' => 'Srinagar',
+                    'gulmarg' => 'Gulmarg',
+                    'pahalgam' => 'Pahalgam'
                 ],
                 'places' => [
                     'srinagar_local' => 'Srinagar Local Sightseeing',
@@ -161,7 +163,8 @@ function dtc_get_default_config() {
                     '5star' => ['name' => '5 Star Hotel + MAP', 'percent' => 150]
                 ],
                 'rooms' => [
-                    'standard' => ['name' => 'Deluxe Room + MAP', 'price' => 6000, 'capacity' => 3]
+                    'standard' => ['name' => 'Standard Double', 'price' => ['srinagar' => 2500, 'gulmarg' => 3000, 'pahalgam' => 2800], 'capacity' => 2],
+                    'triple' => ['name' => 'Double + Extra Bed', 'price' => ['srinagar' => 3500, 'gulmarg' => 4000, 'pahalgam' => 3800], 'capacity' => 3]
                 ],
                 'vehicles' => [
                     'dzire' => ['name' => 'Dzire', 'capacity' => 4, 'price_per_day' => ['srinagar' => 1800, 'jammu' => 3200]],
