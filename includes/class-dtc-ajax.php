@@ -244,7 +244,7 @@ function dtc_handle_ajax_calculation() {
             $gst_pp = round($pp * 0.05);
             $total_pp = $pp + $gst_pp;
             $grand_total = $total_pp * $tp;
-            $profit = $grand_total - $agent_price;
+            $profit = ($pp * $tp) - $agent_price;
 
             $results[] = [
                 'r_h' => $robj['html'], 
